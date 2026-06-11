@@ -100,7 +100,79 @@ Non-PII fields (trace IDs, span IDs, timestamps, service names, status codes) ar
 - `ssn`, `credit_card` — reliable
 - `ip_address`, `date_of_birth` — works in practice
 
-For **custom patterns** (e.g., employee IDs like `EMP-XXXXXX`), use `regexp_replace()` before `ai_mask()` in the pipeline SQL. See the [plan document](otel-pii-redaction-plan.md) for details.
+For **custom patterns** (e.g., employee IDs like `EMP-XXXXXX`), configure them as pipeline parameters — see [Custom regex patterns](#custom-regex-patterns) below.
+
+## Custom regex patterns
+
+### When to use regex vs `ai_mask`
+
+| Use case | Recommended approach |
+|---|---|
+| Known, structured formats (employee IDs, account numbers, internal codes) | **Custom regex** — deterministic, fast, no LLM call overhead |
+| Free-text PII (names, addresses, written descriptions) | **`ai_mask`** — LLM-backed, handles natural language |
+
+Use custom regex patterns when you have internal data formats that `ai_mask` doesn't know about and that follow a consistent, machine-readable structure.
+
+### How to configure patterns
+
+The pipeline supports up to **5** custom regex pattern pairs. Each pair is a parameter:
+
+| Parameter | Description |
+|---|---|
+| `custom_pattern_N` | Java-compatible regex to match. Empty string = skip this slot. |
+| `custom_pattern_N_replacement` | Replacement string (literal). |
+
+Where `N` is 1 through 5.
+
+#### Option 1: Edit `pipeline_config.json` directly
+
+```json
+"custom_pattern_1": "EMP-[0-9]{6}",
+"custom_pattern_1_replacement": "[REDACTED_EMP_ID]",
+"custom_pattern_2": "ACCT-[A-Z0-9]+",
+"custom_pattern_2_replacement": "[REDACTED_ACCT]",
+"custom_pattern_3": "",
+"custom_pattern_3_replacement": ""
+```
+
+**Important:** Use `[0-9]` instead of `\d` for digit matching. The `\d` shorthand can be mangled by pipeline parameter substitution. Character classes like `[0-9]`, `[A-Z]`, `[A-Za-z0-9]` work reliably.
+
+#### Option 2: Pass a JSON file to `deploy.sh`
+
+Create a file, e.g. `custom_patterns.json`:
+
+```json
+{
+  "custom_pattern_1": "EMP-[0-9]{6}",
+  "custom_pattern_1_replacement": "[REDACTED_EMP_ID]",
+  "custom_pattern_2": "ACCT-[A-Z0-9]+",
+  "custom_pattern_2_replacement": "[REDACTED_ACCT]"
+}
+```
+
+Then deploy:
+
+```bash
+./deploy.sh https://my-workspace.cloud.databricks.com my_catalog traces_raw traces_redacted my_app custom_patterns.json
+```
+
+Omitting the 6th argument leaves all pattern slots empty (no-op) — fully backwards compatible.
+
+### Examples
+
+| What to redact | Pattern | Replacement |
+|---|---|---|
+| Employee IDs (`EMP-123456`) | `EMP-[0-9]{6}` | `[REDACTED_EMP_ID]` |
+| Internal account numbers (`ACCT-AB12CD34`) | `ACCT-[A-Z0-9]+` | `[REDACTED_ACCT]` |
+| Internal ticket refs (`INT-2026-1234`) | `INT-[0-9]{4}-[0-9]{4}` | `[REDACTED_TICKET]` |
+| API key prefixes (`sk_live_...`) | `sk_live_[A-Za-z0-9]{32}` | `[REDACTED_API_KEY]` |
+
+### Limits
+
+- Maximum **5** custom pattern pairs per pipeline.
+- Patterns run as `regexp_replace()` **before** `ai_mask()`, so they apply to the raw field value.
+- Patterns are applied in slot order (1 → 5). Later patterns operate on already-replaced text.
+- Empty string for `custom_pattern_N` skips that slot entirely.
 
 ## Testing
 

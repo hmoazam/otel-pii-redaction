@@ -1,6 +1,17 @@
 -- =============================================================
 -- Spark Declarative Pipeline: PII Redaction for OTel Traces
 -- =============================================================
+-- Custom regex patterns are applied via regexp_replace() BEFORE
+-- ai_mask(). Up to 5 pattern/replacement pairs are supported
+-- via pipeline parameters:
+--
+--   ${custom_pattern_1} / ${custom_pattern_1_replacement}
+--   ${custom_pattern_2} / ${custom_pattern_2_replacement}
+--   ... up to 5
+--
+-- Empty pattern = skip. Order: regex first, then ai_mask.
+-- =============================================================
+
 
 -- =============================================================
 -- Streaming Table: Redacted Spans
@@ -27,11 +38,31 @@ SELECT
   start_time_unix_nano,
   end_time_unix_nano,
 
-  -- Redact span attributes (VARIANT field)
+  -- Redact span attributes: custom regex first, then ai_mask
   CASE
     WHEN attributes IS NOT NULL THEN
       ai_mask(
-        CAST(attributes AS STRING),
+        regexp_replace(
+          regexp_replace(
+            regexp_replace(
+              regexp_replace(
+                regexp_replace(
+                  CAST(attributes AS STRING),
+                  CASE WHEN '${custom_pattern_1}' = '' THEN '$^' ELSE '${custom_pattern_1}' END,
+                  '${custom_pattern_1_replacement}'
+                ),
+                CASE WHEN '${custom_pattern_2}' = '' THEN '$^' ELSE '${custom_pattern_2}' END,
+                '${custom_pattern_2_replacement}'
+              ),
+              CASE WHEN '${custom_pattern_3}' = '' THEN '$^' ELSE '${custom_pattern_3}' END,
+              '${custom_pattern_3_replacement}'
+            ),
+            CASE WHEN '${custom_pattern_4}' = '' THEN '$^' ELSE '${custom_pattern_4}' END,
+            '${custom_pattern_4_replacement}'
+          ),
+          CASE WHEN '${custom_pattern_5}' = '' THEN '$^' ELSE '${custom_pattern_5}' END,
+          '${custom_pattern_5_replacement}'
+        ),
         array(${pii_categories})
       )
     ELSE NULL
@@ -39,11 +70,31 @@ SELECT
 
   dropped_attributes_count,
 
-  -- Redact events (array of structs, may contain PII in nested attributes)
+  -- Redact events: custom regex first, then ai_mask
   CASE
     WHEN events IS NOT NULL THEN
       ai_mask(
-        CAST(events AS STRING),
+        regexp_replace(
+          regexp_replace(
+            regexp_replace(
+              regexp_replace(
+                regexp_replace(
+                  CAST(events AS STRING),
+                  CASE WHEN '${custom_pattern_1}' = '' THEN '$^' ELSE '${custom_pattern_1}' END,
+                  '${custom_pattern_1_replacement}'
+                ),
+                CASE WHEN '${custom_pattern_2}' = '' THEN '$^' ELSE '${custom_pattern_2}' END,
+                '${custom_pattern_2_replacement}'
+              ),
+              CASE WHEN '${custom_pattern_3}' = '' THEN '$^' ELSE '${custom_pattern_3}' END,
+              '${custom_pattern_3_replacement}'
+            ),
+            CASE WHEN '${custom_pattern_4}' = '' THEN '$^' ELSE '${custom_pattern_4}' END,
+            '${custom_pattern_4_replacement}'
+          ),
+          CASE WHEN '${custom_pattern_5}' = '' THEN '$^' ELSE '${custom_pattern_5}' END,
+          '${custom_pattern_5_replacement}'
+        ),
         array(${pii_categories})
       )
     ELSE NULL
@@ -51,18 +102,38 @@ SELECT
 
   dropped_events_count,
 
-  -- Pass through links unchanged (typically just trace/span IDs)
+  -- Pass through links unchanged
   links,
   dropped_links_count,
   status,
 
-  -- Redact resource attributes (STRUCT with nested VARIANT)
+  -- Redact resource attributes: custom regex first, then ai_mask
   CASE
     WHEN resource.attributes IS NOT NULL THEN
       named_struct(
         'attributes',
         ai_mask(
-          CAST(resource.attributes AS STRING),
+          regexp_replace(
+            regexp_replace(
+              regexp_replace(
+                regexp_replace(
+                  regexp_replace(
+                    CAST(resource.attributes AS STRING),
+                    CASE WHEN '${custom_pattern_1}' = '' THEN '$^' ELSE '${custom_pattern_1}' END,
+                    '${custom_pattern_1_replacement}'
+                  ),
+                  CASE WHEN '${custom_pattern_2}' = '' THEN '$^' ELSE '${custom_pattern_2}' END,
+                  '${custom_pattern_2_replacement}'
+                ),
+                CASE WHEN '${custom_pattern_3}' = '' THEN '$^' ELSE '${custom_pattern_3}' END,
+                '${custom_pattern_3_replacement}'
+              ),
+              CASE WHEN '${custom_pattern_4}' = '' THEN '$^' ELSE '${custom_pattern_4}' END,
+              '${custom_pattern_4_replacement}'
+            ),
+            CASE WHEN '${custom_pattern_5}' = '' THEN '$^' ELSE '${custom_pattern_5}' END,
+            '${custom_pattern_5_replacement}'
+          ),
           array(${pii_categories})
         ),
         'dropped_attributes_count',
@@ -97,21 +168,61 @@ SELECT
   severity_number,
   severity_text,
 
-  -- Redact log body (VARIANT field)
+  -- Redact log body: custom regex first, then ai_mask
   CASE
     WHEN body IS NOT NULL THEN
       ai_mask(
-        CAST(body AS STRING),
+        regexp_replace(
+          regexp_replace(
+            regexp_replace(
+              regexp_replace(
+                regexp_replace(
+                  CAST(body AS STRING),
+                  CASE WHEN '${custom_pattern_1}' = '' THEN '$^' ELSE '${custom_pattern_1}' END,
+                  '${custom_pattern_1_replacement}'
+                ),
+                CASE WHEN '${custom_pattern_2}' = '' THEN '$^' ELSE '${custom_pattern_2}' END,
+                '${custom_pattern_2_replacement}'
+              ),
+              CASE WHEN '${custom_pattern_3}' = '' THEN '$^' ELSE '${custom_pattern_3}' END,
+              '${custom_pattern_3_replacement}'
+            ),
+            CASE WHEN '${custom_pattern_4}' = '' THEN '$^' ELSE '${custom_pattern_4}' END,
+            '${custom_pattern_4_replacement}'
+          ),
+          CASE WHEN '${custom_pattern_5}' = '' THEN '$^' ELSE '${custom_pattern_5}' END,
+          '${custom_pattern_5_replacement}'
+        ),
         array(${pii_categories})
       )
     ELSE NULL
   END AS body,
 
-  -- Redact log attributes (VARIANT field)
+  -- Redact log attributes: custom regex first, then ai_mask
   CASE
     WHEN attributes IS NOT NULL THEN
       ai_mask(
-        CAST(attributes AS STRING),
+        regexp_replace(
+          regexp_replace(
+            regexp_replace(
+              regexp_replace(
+                regexp_replace(
+                  CAST(attributes AS STRING),
+                  CASE WHEN '${custom_pattern_1}' = '' THEN '$^' ELSE '${custom_pattern_1}' END,
+                  '${custom_pattern_1_replacement}'
+                ),
+                CASE WHEN '${custom_pattern_2}' = '' THEN '$^' ELSE '${custom_pattern_2}' END,
+                '${custom_pattern_2_replacement}'
+              ),
+              CASE WHEN '${custom_pattern_3}' = '' THEN '$^' ELSE '${custom_pattern_3}' END,
+              '${custom_pattern_3_replacement}'
+            ),
+            CASE WHEN '${custom_pattern_4}' = '' THEN '$^' ELSE '${custom_pattern_4}' END,
+            '${custom_pattern_4_replacement}'
+          ),
+          CASE WHEN '${custom_pattern_5}' = '' THEN '$^' ELSE '${custom_pattern_5}' END,
+          '${custom_pattern_5_replacement}'
+        ),
         array(${pii_categories})
       )
     ELSE NULL
@@ -120,13 +231,33 @@ SELECT
   dropped_attributes_count,
   flags,
 
-  -- Redact resource attributes (STRUCT with nested VARIANT)
+  -- Redact resource attributes: custom regex first, then ai_mask
   CASE
     WHEN resource.attributes IS NOT NULL THEN
       named_struct(
         'attributes',
         ai_mask(
-          CAST(resource.attributes AS STRING),
+          regexp_replace(
+            regexp_replace(
+              regexp_replace(
+                regexp_replace(
+                  regexp_replace(
+                    CAST(resource.attributes AS STRING),
+                    CASE WHEN '${custom_pattern_1}' = '' THEN '$^' ELSE '${custom_pattern_1}' END,
+                    '${custom_pattern_1_replacement}'
+                  ),
+                  CASE WHEN '${custom_pattern_2}' = '' THEN '$^' ELSE '${custom_pattern_2}' END,
+                  '${custom_pattern_2_replacement}'
+                ),
+                CASE WHEN '${custom_pattern_3}' = '' THEN '$^' ELSE '${custom_pattern_3}' END,
+                '${custom_pattern_3_replacement}'
+              ),
+              CASE WHEN '${custom_pattern_4}' = '' THEN '$^' ELSE '${custom_pattern_4}' END,
+              '${custom_pattern_4_replacement}'
+            ),
+            CASE WHEN '${custom_pattern_5}' = '' THEN '$^' ELSE '${custom_pattern_5}' END,
+            '${custom_pattern_5_replacement}'
+          ),
           array(${pii_categories})
         ),
         'dropped_attributes_count',

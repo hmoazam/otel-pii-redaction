@@ -10,7 +10,17 @@
     "source_catalog": "<SOURCE_CATALOG>",
     "source_schema": "<SOURCE_SCHEMA>",
     "table_prefix": "<TABLE_PREFIX>",
-    "pii_categories": "'email','phone','ssn','credit_card','name','address'"
+    "pii_categories": "'email','phone','ssn','credit_card','name','address'",
+    "custom_pattern_1": "EMP-[0-9]{6}",
+    "custom_pattern_1_replacement": "[REDACTED_EMP_ID]",
+    "custom_pattern_2": "",
+    "custom_pattern_2_replacement": "",
+    "custom_pattern_3": "",
+    "custom_pattern_3_replacement": "",
+    "custom_pattern_4": "",
+    "custom_pattern_4_replacement": "",
+    "custom_pattern_5": "",
+    "custom_pattern_5_replacement": ""
   },
   "libraries": [
     {
