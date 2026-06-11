@@ -1,0 +1,42 @@
+{
+  "_comment": "Example job config — replace all values before use, or use deploy.sh which parametrizes automatically.",
+  "name": "otel-raw-retention-cleanup",
+  "schedule": {
+    "quartz_cron_expression": "0 0 2 * * ?",
+    "timezone_id": "America/Los_Angeles",
+    "pause_status": "UNPAUSED"
+  },
+  "max_concurrent_runs": 1,
+  "tasks": [
+    {
+      "task_key": "retention_cleanup",
+      "notebook_task": {
+        "notebook_path": "/Workspace/Users/<YOUR_USER>/otel-pii-redaction/otel_retention_cleanup",
+        "base_parameters": {
+          "retention_days": "90",
+          "source_catalog": "<SOURCE_CATALOG>",
+          "source_schema": "<SOURCE_SCHEMA>",
+          "table_prefix": "<TABLE_PREFIX>"
+        },
+        "source": "WORKSPACE"
+      },
+      "description": "Delete rows older than retention_days and vacuum raw OTel tables",
+      "environment_key": "default"
+    }
+  ],
+  "tags": {
+    "project": "otel-pii-redaction",
+    "purpose": "retention-cleanup"
+  },
+  "queue": {
+    "enabled": true
+  },
+  "environments": [
+    {
+      "environment_key": "default",
+      "spec": {
+        "client": "1"
+      }
+    }
+  ]
+}

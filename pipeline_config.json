@@ -1,0 +1,25 @@
+{
+  "_comment": "Example pipeline config — replace all values before use, or use deploy.sh which parametrizes automatically.",
+  "name": "otel-pii-redaction",
+  "catalog": "<TARGET_CATALOG>",
+  "schema": "<TARGET_SCHEMA>",
+  "serverless": true,
+  "continuous": false,
+  "channel": "CURRENT",
+  "configuration": {
+    "source_catalog": "<SOURCE_CATALOG>",
+    "source_schema": "<SOURCE_SCHEMA>",
+    "table_prefix": "<TABLE_PREFIX>",
+    "pii_categories": "'email','phone','ssn','credit_card','name','address'"
+  },
+  "libraries": [
+    {
+      "file": {
+        "path": "/Workspace/Users/<YOUR_USER>/otel-pii-redaction/pii_redaction_pipeline.sql"
+      }
+    }
+  ],
+  "tags": {
+    "created_by": "otel-pii-redaction"
+  }
+}
