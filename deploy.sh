@@ -2,31 +2,24 @@
 # =============================================================
 # OTel PII Redaction Demo — Redeployment Script
 # =============================================================
-# Usage: ./deploy.sh <WORKSPACE_HOST> <CATALOG> <SOURCE_SCHEMA> <TARGET_SCHEMA> <TABLE_PREFIX> [CUSTOM_PATTERNS_JSON]
+# Usage: ./deploy.sh <WORKSPACE_HOST> <CATALOG> <SOURCE_SCHEMA> <TARGET_SCHEMA> <TABLE_PREFIX> [REDACTION_CONFIG]
 #
 # Arguments:
-#   1. WORKSPACE_HOST         — e.g. https://my-workspace.cloud.databricks.com
-#   2. CATALOG                — Unity Catalog name
-#   3. SOURCE_SCHEMA          — Schema containing raw OTel tables
-#   4. TARGET_SCHEMA          — Schema to write redacted tables into
-#   5. TABLE_PREFIX           — OTel table name prefix
-#   6. CUSTOM_PATTERNS_JSON   — (optional) Path to a JSON file defining custom regex patterns.
-#                               If omitted, all custom pattern slots are set to empty strings (no-op).
+#   1. WORKSPACE_HOST       — e.g. https://my-workspace.cloud.databricks.com
+#   2. CATALOG              — Unity Catalog name
+#   3. SOURCE_SCHEMA        — Schema containing raw OTel tables
+#   4. TARGET_SCHEMA        — Schema to write redacted tables into
+#   5. TABLE_PREFIX         — OTel table name prefix
+#   6. REDACTION_CONFIG     — (optional) Path to a JSON file configuring what to redact.
+#                             Controls both ai_mask PII categories and custom regex patterns.
+#                             If omitted, uses default PII categories and no custom patterns.
+#                             See redaction_config.example.json for the format.
 #
-# Example (no custom patterns):
-#   ./deploy.sh https://my-workspace.cloud.databricks.com hanna_moazam claude_ingest traces_redacted claude_code
+# Example (defaults only):
+#   ./deploy.sh https://my-workspace.cloud.databricks.com my_catalog traces_raw traces_redacted my_app
 #
-# Example (with custom patterns):
-#   ./deploy.sh https://my-workspace.cloud.databricks.com hanna_moazam claude_ingest traces_redacted claude_code custom_patterns.json
-#
-# Custom patterns JSON format:
-#   {
-#     "custom_pattern_1": "EMP-\\d{6}",
-#     "custom_pattern_1_replacement": "[REDACTED_EMP_ID]",
-#     "custom_pattern_2": "ACCT-\\d{10}",
-#     "custom_pattern_2_replacement": "[REDACTED_ACCT]"
-#   }
-#   Omitted slots default to empty string (skipped). Up to 5 pattern pairs supported.
+# Example (with custom config):
+#   ./deploy.sh https://my-workspace.cloud.databricks.com my_catalog traces_raw traces_redacted my_app redaction_config.json
 #
 # Prerequisites:
 #   - Databricks CLI authenticated to the target workspace
@@ -35,33 +28,38 @@
 
 set -euo pipefail
 
-WORKSPACE_HOST="${1:?Usage: ./deploy.sh <WORKSPACE_HOST> <CATALOG> <SOURCE_SCHEMA> <TARGET_SCHEMA> <TABLE_PREFIX> [CUSTOM_PATTERNS_JSON]}"
+WORKSPACE_HOST="${1:?Usage: ./deploy.sh <WORKSPACE_HOST> <CATALOG> <SOURCE_SCHEMA> <TARGET_SCHEMA> <TABLE_PREFIX> [REDACTION_CONFIG]}"
 CATALOG="${2:?Missing CATALOG}"
 SOURCE_SCHEMA="${3:?Missing SOURCE_SCHEMA}"
 TARGET_SCHEMA="${4:?Missing TARGET_SCHEMA}"
 TABLE_PREFIX="${5:?Missing TABLE_PREFIX}"
-CUSTOM_PATTERNS_JSON="${6:-}"
+REDACTION_CONFIG="${6:-}"
 
-# Read custom pattern slots from optional JSON file, defaulting all to empty string
-_read_pattern() {
+# Read a key from the optional config JSON, with a default fallback
+_read_config() {
   local key="$1"
-  if [ -n "$CUSTOM_PATTERNS_JSON" ] && [ -f "$CUSTOM_PATTERNS_JSON" ]; then
-    python3 -c "import sys,json; d=json.load(open('$CUSTOM_PATTERNS_JSON')); print(d.get('$key',''))" 2>/dev/null || echo ""
+  local default="${2:-}"
+  if [ -n "$REDACTION_CONFIG" ] && [ -f "$REDACTION_CONFIG" ]; then
+    python3 -c "import json; d=json.load(open('$REDACTION_CONFIG')); print(d.get('$key','$default'))" 2>/dev/null || echo "$default"
   else
-    echo ""
+    echo "$default"
   fi
 }
 
-CUSTOM_PATTERN_1="$(_read_pattern custom_pattern_1)"
-CUSTOM_PATTERN_1_REPLACEMENT="$(_read_pattern custom_pattern_1_replacement)"
-CUSTOM_PATTERN_2="$(_read_pattern custom_pattern_2)"
-CUSTOM_PATTERN_2_REPLACEMENT="$(_read_pattern custom_pattern_2_replacement)"
-CUSTOM_PATTERN_3="$(_read_pattern custom_pattern_3)"
-CUSTOM_PATTERN_3_REPLACEMENT="$(_read_pattern custom_pattern_3_replacement)"
-CUSTOM_PATTERN_4="$(_read_pattern custom_pattern_4)"
-CUSTOM_PATTERN_4_REPLACEMENT="$(_read_pattern custom_pattern_4_replacement)"
-CUSTOM_PATTERN_5="$(_read_pattern custom_pattern_5)"
-CUSTOM_PATTERN_5_REPLACEMENT="$(_read_pattern custom_pattern_5_replacement)"
+# ai_mask PII categories (configurable, with sensible default)
+PII_CATEGORIES="$(_read_config pii_categories "'email','phone','ssn','credit_card','name','address'")"
+
+# Custom regex patterns (up to 5 pairs)
+CUSTOM_PATTERN_1="$(_read_config custom_pattern_1)"
+CUSTOM_PATTERN_1_REPLACEMENT="$(_read_config custom_pattern_1_replacement)"
+CUSTOM_PATTERN_2="$(_read_config custom_pattern_2)"
+CUSTOM_PATTERN_2_REPLACEMENT="$(_read_config custom_pattern_2_replacement)"
+CUSTOM_PATTERN_3="$(_read_config custom_pattern_3)"
+CUSTOM_PATTERN_3_REPLACEMENT="$(_read_config custom_pattern_3_replacement)"
+CUSTOM_PATTERN_4="$(_read_config custom_pattern_4)"
+CUSTOM_PATTERN_4_REPLACEMENT="$(_read_config custom_pattern_4_replacement)"
+CUSTOM_PATTERN_5="$(_read_config custom_pattern_5)"
+CUSTOM_PATTERN_5_REPLACEMENT="$(_read_config custom_pattern_5_replacement)"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 WORKSPACE_PATH="/Workspace/Users/$(databricks auth describe --host "$WORKSPACE_HOST" 2>/dev/null | grep -oP 'User:\s+\K.*' || echo 'UNKNOWN_USER')/otel-pii-redaction"
@@ -73,7 +71,8 @@ echo "Source:          $CATALOG.$SOURCE_SCHEMA"
 echo "Target:          $CATALOG.$TARGET_SCHEMA"
 echo "Table prefix:    $TABLE_PREFIX"
 echo "Remote path:     $WORKSPACE_PATH"
-echo "Custom patterns: ${CUSTOM_PATTERNS_JSON:-"(none — all pattern slots empty)"}"
+echo "Redaction config: ${REDACTION_CONFIG:-"(defaults)"}"
+echo "PII categories:  $PII_CATEGORIES"
 echo ""
 
 # Step 1: Upload files to workspace
@@ -110,7 +109,7 @@ PIPELINE_JSON=$(cat <<EOF
     "source_catalog": "$CATALOG",
     "source_schema": "$SOURCE_SCHEMA",
     "table_prefix": "$TABLE_PREFIX",
-    "pii_categories": "'email','phone','ssn','credit_card','name','address'",
+    "pii_categories": "$PII_CATEGORIES",
     "custom_pattern_1": "$CUSTOM_PATTERN_1",
     "custom_pattern_1_replacement": "$CUSTOM_PATTERN_1_REPLACEMENT",
     "custom_pattern_2": "$CUSTOM_PATTERN_2",

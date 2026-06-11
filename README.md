@@ -30,14 +30,20 @@ A **Spark Declarative Pipeline** (SDP) incrementally reads new OTel spans, appli
 ### One-command deployment
 
 ```bash
-./deploy.sh <WORKSPACE_HOST> <CATALOG> <SOURCE_SCHEMA> <TARGET_SCHEMA> <TABLE_PREFIX>
+./deploy.sh <WORKSPACE_HOST> <CATALOG> <SOURCE_SCHEMA> <TARGET_SCHEMA> <TABLE_PREFIX> [REDACTION_CONFIG]
 ```
 
-Example:
+Examples:
 
 ```bash
+# With defaults (standard PII categories, no custom patterns)
 ./deploy.sh https://my-workspace.cloud.databricks.com my_catalog traces_raw traces_redacted my_app
+
+# With custom redaction config (PII categories + regex patterns)
+./deploy.sh https://my-workspace.cloud.databricks.com my_catalog traces_raw traces_redacted my_app redaction_config.json
 ```
+
+The optional `REDACTION_CONFIG` is a JSON file that controls both `ai_mask` PII categories and custom regex patterns. See [`redaction_config.example.json`](redaction_config.example.json) for the format.
 
 This will:
 1. Upload the pipeline SQL and retention notebook to your workspace
@@ -93,72 +99,56 @@ The pipeline applies `ai_mask()` to these fields:
 
 Non-PII fields (trace IDs, span IDs, timestamps, service names, status codes) are preserved unchanged.
 
-### Supported PII categories
+## Redaction configuration
 
-`ai_mask()` is LLM-backed and recognizes standard PII types well:
+All redaction settings — both `ai_mask` PII categories and custom regex patterns — are controlled via a single JSON config file passed as the 6th argument to `deploy.sh`. See [`redaction_config.example.json`](redaction_config.example.json) for a complete example.
+
+```json
+{
+  "pii_categories": "'email','phone','ssn','credit_card','name','address'",
+  "custom_pattern_1": "EMP-[0-9]{6}",
+  "custom_pattern_1_replacement": "[REDACTED_EMP_ID]",
+  "custom_pattern_2": "ACCT-[A-Z0-9]+",
+  "custom_pattern_2_replacement": "[REDACTED_ACCOUNT]"
+}
+```
+
+If no config file is provided, the pipeline uses the default PII categories and no custom patterns.
+
+### `ai_mask` PII categories
+
+The `pii_categories` field controls what `ai_mask()` looks for. It's a comma-separated list of quoted category names:
+
+```json
+"pii_categories": "'email','phone','ssn','credit_card','name','address'"
+```
+
+Supported categories (LLM-backed, interprets labels semantically):
 - `email`, `phone`, `name`, `address` — reliable
 - `ssn`, `credit_card` — reliable
 - `ip_address`, `date_of_birth` — works in practice
 
-For **custom patterns** (e.g., employee IDs like `EMP-XXXXXX`), configure them as pipeline parameters — see [Custom regex patterns](#custom-regex-patterns) below.
+### Custom regex patterns
 
-## Custom regex patterns
+For structured, known formats that `ai_mask` doesn't recognize (employee IDs, internal account numbers, etc.), add custom regex patterns. Up to **5** pattern/replacement pairs are supported:
+
+| Key | Description |
+|---|---|
+| `custom_pattern_N` | Java-compatible regex to match. Empty string = skip. |
+| `custom_pattern_N_replacement` | Replacement text (literal). |
+
+Where `N` is 1 through 5.
+
+**Important:** Use `[0-9]` instead of `\d` for digit matching. The `\d` shorthand gets mangled by pipeline parameter substitution. Character classes like `[0-9]`, `[A-Z]`, `[A-Za-z0-9]` work reliably.
 
 ### When to use regex vs `ai_mask`
 
 | Use case | Recommended approach |
 |---|---|
-| Known, structured formats (employee IDs, account numbers, internal codes) | **Custom regex** — deterministic, fast, no LLM call overhead |
+| Known, structured formats (employee IDs, account numbers, internal codes) | **Custom regex** — deterministic, fast, no LLM cost |
 | Free-text PII (names, addresses, written descriptions) | **`ai_mask`** — LLM-backed, handles natural language |
 
-Use custom regex patterns when you have internal data formats that `ai_mask` doesn't know about and that follow a consistent, machine-readable structure.
-
-### How to configure patterns
-
-The pipeline supports up to **5** custom regex pattern pairs. Each pair is a parameter:
-
-| Parameter | Description |
-|---|---|
-| `custom_pattern_N` | Java-compatible regex to match. Empty string = skip this slot. |
-| `custom_pattern_N_replacement` | Replacement string (literal). |
-
-Where `N` is 1 through 5.
-
-#### Option 1: Edit `pipeline_config.json` directly
-
-```json
-"custom_pattern_1": "EMP-[0-9]{6}",
-"custom_pattern_1_replacement": "[REDACTED_EMP_ID]",
-"custom_pattern_2": "ACCT-[A-Z0-9]+",
-"custom_pattern_2_replacement": "[REDACTED_ACCT]",
-"custom_pattern_3": "",
-"custom_pattern_3_replacement": ""
-```
-
-**Important:** Use `[0-9]` instead of `\d` for digit matching. The `\d` shorthand can be mangled by pipeline parameter substitution. Character classes like `[0-9]`, `[A-Z]`, `[A-Za-z0-9]` work reliably.
-
-#### Option 2: Pass a JSON file to `deploy.sh`
-
-Create a file, e.g. `custom_patterns.json`:
-
-```json
-{
-  "custom_pattern_1": "EMP-[0-9]{6}",
-  "custom_pattern_1_replacement": "[REDACTED_EMP_ID]",
-  "custom_pattern_2": "ACCT-[A-Z0-9]+",
-  "custom_pattern_2_replacement": "[REDACTED_ACCT]"
-}
-```
-
-Then deploy:
-
-```bash
-./deploy.sh https://my-workspace.cloud.databricks.com my_catalog traces_raw traces_redacted my_app custom_patterns.json
-```
-
-Omitting the 6th argument leaves all pattern slots empty (no-op) — fully backwards compatible.
-
-### Examples
+### Regex examples
 
 | What to redact | Pattern | Replacement |
 |---|---|---|
@@ -169,7 +159,7 @@ Omitting the 6th argument leaves all pattern slots empty (no-op) — fully backw
 
 ### Limits
 
-- Maximum **5** custom pattern pairs per pipeline.
+- Maximum **5** custom regex pattern pairs per pipeline.
 - Patterns run as `regexp_replace()` **before** `ai_mask()`, so they apply to the raw field value.
 - Patterns are applied in slot order (1 → 5). Later patterns operate on already-replaced text.
 - Empty string for `custom_pattern_N` skips that slot entirely.
@@ -209,14 +199,15 @@ LIMIT 5;
 | File | Description |
 |---|---|
 | `deploy.sh` | One-command deployment script |
-| `pii_redaction_pipeline.sql` | SDP pipeline — streaming tables with `ai_mask()` |
+| `redaction_config.example.json` | Example redaction config (PII categories + regex patterns) |
+| `pii_redaction_pipeline.sql` | SDP pipeline — streaming tables with regex + `ai_mask()` |
 | `otel_retention_cleanup.py` | Databricks notebook for raw table TTL cleanup |
 | `unified_view.sql` | Unified trace view joining spans + annotations |
 | `setup_schema_and_grants.sql` | Schema creation and access control grants |
 | `pipeline_config.json` | Example pipeline config (reference) |
 | `retention_job_config.json` | Example job config (reference) |
 | `send_pii_traces.py` | Test utility — sends PII test data as OTel spans |
-| `pii_test_data.jsonl` | 50 lines of synthetic PII test data |
+| `pii_test_data.jsonl` | 60 lines of synthetic PII test data (including regex patterns) |
 
 ## Architecture
 
