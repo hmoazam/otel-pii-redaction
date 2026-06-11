@@ -106,18 +106,18 @@ All redaction settings — both `ai_mask` PII categories and custom regex patter
 ```json
 {
   "pii_categories": "'email','phone','ssn','credit_card','name','address'",
-  "custom_pattern_1": "EMP-[0-9]{6}",
-  "custom_pattern_1_replacement": "[REDACTED_EMP_ID]",
-  "custom_pattern_2": "ACCT-[A-Z0-9]+",
-  "custom_pattern_2_replacement": "[REDACTED_ACCOUNT]"
+  "custom_patterns": [
+    "EMP-[0-9]{6}",
+    "ACCT-[A-Z0-9]+"
+  ]
 }
 ```
 
 If no config file is provided, the pipeline uses the default PII categories and no custom patterns.
 
-### `ai_mask` PII categories
+### `pii_categories` — AI-based redaction
 
-The `pii_categories` field controls what `ai_mask()` looks for. It's a comma-separated list of quoted category names:
+Controls what `ai_mask()` looks for. Comma-separated list of quoted category names:
 
 ```json
 "pii_categories": "'email','phone','ssn','credit_card','name','address'"
@@ -128,41 +128,38 @@ Supported categories (LLM-backed, interprets labels semantically):
 - `ssn`, `credit_card` — reliable
 - `ip_address`, `date_of_birth` — works in practice
 
-### Custom regex patterns
+### `custom_patterns` — regex-based redaction
 
-For structured, known formats that `ai_mask` doesn't recognize (employee IDs, internal account numbers, etc.), add custom regex patterns. Up to **5** pattern/replacement pairs are supported:
+A list of Java-compatible regex patterns for structured formats that `ai_mask` doesn't recognize. Any number of patterns can be specified. All matches are replaced with `[MASKED]`.
 
-| Key | Description |
+```json
+"custom_patterns": [
+  "EMP-[0-9]{6}",
+  "ACCT-[A-Z0-9]+",
+  "INT-[0-9]{4}-[0-9]{4}",
+  "sk_live_[A-Za-z0-9]{32}"
+]
+```
+
+The deploy script combines all patterns into a single regex with alternation (`|`), so the pipeline applies them in one `regexp_replace()` call before `ai_mask()`.
+
+**Important:** Use `[0-9]` instead of `\d` for digit matching. The `\d` shorthand gets mangled by pipeline parameter substitution.
+
+### When to use which
+
+| Use case | Approach |
 |---|---|
-| `custom_pattern_N` | Java-compatible regex to match. Empty string = skip. |
-| `custom_pattern_N_replacement` | Replacement text (literal). |
+| Known, structured formats (employee IDs, account numbers, API keys) | `custom_patterns` — deterministic, fast, no LLM cost |
+| Free-text PII (names, addresses, written descriptions) | `pii_categories` — LLM-backed, handles natural language |
 
-Where `N` is 1 through 5.
+### Example patterns
 
-**Important:** Use `[0-9]` instead of `\d` for digit matching. The `\d` shorthand gets mangled by pipeline parameter substitution. Character classes like `[0-9]`, `[A-Z]`, `[A-Za-z0-9]` work reliably.
-
-### When to use regex vs `ai_mask`
-
-| Use case | Recommended approach |
+| What to redact | Pattern |
 |---|---|
-| Known, structured formats (employee IDs, account numbers, internal codes) | **Custom regex** — deterministic, fast, no LLM cost |
-| Free-text PII (names, addresses, written descriptions) | **`ai_mask`** — LLM-backed, handles natural language |
-
-### Regex examples
-
-| What to redact | Pattern | Replacement |
-|---|---|---|
-| Employee IDs (`EMP-123456`) | `EMP-[0-9]{6}` | `[REDACTED_EMP_ID]` |
-| Internal account numbers (`ACCT-AB12CD34`) | `ACCT-[A-Z0-9]+` | `[REDACTED_ACCT]` |
-| Internal ticket refs (`INT-2026-1234`) | `INT-[0-9]{4}-[0-9]{4}` | `[REDACTED_TICKET]` |
-| API key prefixes (`sk_live_...`) | `sk_live_[A-Za-z0-9]{32}` | `[REDACTED_API_KEY]` |
-
-### Limits
-
-- Maximum **5** custom regex pattern pairs per pipeline.
-- Patterns run as `regexp_replace()` **before** `ai_mask()`, so they apply to the raw field value.
-- Patterns are applied in slot order (1 → 5). Later patterns operate on already-replaced text.
-- Empty string for `custom_pattern_N` skips that slot entirely.
+| Employee IDs (`EMP-123456`) | `EMP-[0-9]{6}` |
+| Internal accounts (`ACCT-AB12CD34`) | `ACCT-[A-Z0-9]+` |
+| Ticket refs (`INT-2026-1234`) | `INT-[0-9]{4}-[0-9]{4}` |
+| API keys (`sk_live_...`) | `sk_live_[A-Za-z0-9]{32}` |
 
 ## Testing
 
@@ -176,7 +173,7 @@ pip install opentelemetry-exporter-otlp-proto-http
 python send_pii_traces.py <WORKSPACE_HOST> <CATALOG.SCHEMA.PREFIX_otel_spans>
 ```
 
-This sends 50 test traces containing emails, phones, SSNs, credit cards, names, and addresses.
+This sends 60 test traces containing emails, phones, SSNs, credit cards, names, addresses, employee IDs, and internal account numbers.
 
 ### Validate redaction
 

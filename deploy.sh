@@ -11,7 +11,7 @@
 #   4. TARGET_SCHEMA        — Schema to write redacted tables into
 #   5. TABLE_PREFIX         — OTel table name prefix
 #   6. REDACTION_CONFIG     — (optional) Path to a JSON file configuring what to redact.
-#                             Controls both ai_mask PII categories and custom regex patterns.
+#                             Controls ai_mask PII categories and custom regex patterns.
 #                             If omitted, uses default PII categories and no custom patterns.
 #                             See redaction_config.example.json for the format.
 #
@@ -35,44 +35,41 @@ TARGET_SCHEMA="${4:?Missing TARGET_SCHEMA}"
 TABLE_PREFIX="${5:?Missing TABLE_PREFIX}"
 REDACTION_CONFIG="${6:-}"
 
-# Read a key from the optional config JSON, with a default fallback
-_read_config() {
-  local key="$1"
-  local default="${2:-}"
-  if [ -n "$REDACTION_CONFIG" ] && [ -f "$REDACTION_CONFIG" ]; then
-    python3 -c "import json; d=json.load(open('$REDACTION_CONFIG')); print(d.get('$key','$default'))" 2>/dev/null || echo "$default"
-  else
-    echo "$default"
-  fi
-}
+# Read redaction config from JSON file (or use defaults)
+if [ -n "$REDACTION_CONFIG" ] && [ -f "$REDACTION_CONFIG" ]; then
+  PII_CATEGORIES=$(python3 -c "
+import json
+d = json.load(open('$REDACTION_CONFIG'))
+print(d.get('pii_categories', \"'email','phone','ssn','credit_card','name','address'\"))
+" 2>/dev/null)
 
-# ai_mask PII categories (configurable, with sensible default)
-PII_CATEGORIES="$(_read_config pii_categories "'email','phone','ssn','credit_card','name','address'")"
-
-# Custom regex patterns (up to 5 pairs)
-CUSTOM_PATTERN_1="$(_read_config custom_pattern_1)"
-CUSTOM_PATTERN_1_REPLACEMENT="$(_read_config custom_pattern_1_replacement)"
-CUSTOM_PATTERN_2="$(_read_config custom_pattern_2)"
-CUSTOM_PATTERN_2_REPLACEMENT="$(_read_config custom_pattern_2_replacement)"
-CUSTOM_PATTERN_3="$(_read_config custom_pattern_3)"
-CUSTOM_PATTERN_3_REPLACEMENT="$(_read_config custom_pattern_3_replacement)"
-CUSTOM_PATTERN_4="$(_read_config custom_pattern_4)"
-CUSTOM_PATTERN_4_REPLACEMENT="$(_read_config custom_pattern_4_replacement)"
-CUSTOM_PATTERN_5="$(_read_config custom_pattern_5)"
-CUSTOM_PATTERN_5_REPLACEMENT="$(_read_config custom_pattern_5_replacement)"
+  CUSTOM_PATTERNS_REGEX=$(python3 -c "
+import json
+d = json.load(open('$REDACTION_CONFIG'))
+patterns = d.get('custom_patterns', [])
+if patterns:
+    print('(' + '|'.join(patterns) + ')')
+else:
+    print('\$^')
+" 2>/dev/null)
+else
+  PII_CATEGORIES="'email','phone','ssn','credit_card','name','address'"
+  CUSTOM_PATTERNS_REGEX='$^'
+fi
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 WORKSPACE_PATH="/Workspace/Users/$(databricks auth describe --host "$WORKSPACE_HOST" 2>/dev/null | grep -oP 'User:\s+\K.*' || echo 'UNKNOWN_USER')/otel-pii-redaction"
 
 echo "=== OTel PII Redaction Demo Deployment ==="
-echo "Workspace:       $WORKSPACE_HOST"
-echo "Catalog:         $CATALOG"
-echo "Source:          $CATALOG.$SOURCE_SCHEMA"
-echo "Target:          $CATALOG.$TARGET_SCHEMA"
-echo "Table prefix:    $TABLE_PREFIX"
-echo "Remote path:     $WORKSPACE_PATH"
+echo "Workspace:        $WORKSPACE_HOST"
+echo "Catalog:          $CATALOG"
+echo "Source:           $CATALOG.$SOURCE_SCHEMA"
+echo "Target:           $CATALOG.$TARGET_SCHEMA"
+echo "Table prefix:     $TABLE_PREFIX"
+echo "Remote path:      $WORKSPACE_PATH"
 echo "Redaction config: ${REDACTION_CONFIG:-"(defaults)"}"
-echo "PII categories:  $PII_CATEGORIES"
+echo "PII categories:   $PII_CATEGORIES"
+echo "Custom regex:     $CUSTOM_PATTERNS_REGEX"
 echo ""
 
 # Step 1: Upload files to workspace
@@ -97,39 +94,26 @@ databricks sql execute --statement "CREATE SCHEMA IF NOT EXISTS ${CATALOG}.${TAR
 # Step 3: Create the SDP pipeline
 echo ""
 echo "--- Step 3: Creating SDP pipeline ---"
-PIPELINE_JSON=$(cat <<EOF
-{
-  "name": "otel-pii-redaction",
-  "catalog": "$CATALOG",
-  "schema": "$TARGET_SCHEMA",
-  "serverless": true,
-  "continuous": false,
-  "channel": "CURRENT",
-  "configuration": {
-    "source_catalog": "$CATALOG",
-    "source_schema": "$SOURCE_SCHEMA",
-    "table_prefix": "$TABLE_PREFIX",
-    "pii_categories": "$PII_CATEGORIES",
-    "custom_pattern_1": "$CUSTOM_PATTERN_1",
-    "custom_pattern_1_replacement": "$CUSTOM_PATTERN_1_REPLACEMENT",
-    "custom_pattern_2": "$CUSTOM_PATTERN_2",
-    "custom_pattern_2_replacement": "$CUSTOM_PATTERN_2_REPLACEMENT",
-    "custom_pattern_3": "$CUSTOM_PATTERN_3",
-    "custom_pattern_3_replacement": "$CUSTOM_PATTERN_3_REPLACEMENT",
-    "custom_pattern_4": "$CUSTOM_PATTERN_4",
-    "custom_pattern_4_replacement": "$CUSTOM_PATTERN_4_REPLACEMENT",
-    "custom_pattern_5": "$CUSTOM_PATTERN_5",
-    "custom_pattern_5_replacement": "$CUSTOM_PATTERN_5_REPLACEMENT"
-  },
-  "libraries": [
-    {"file": {"path": "$WORKSPACE_PATH/pii_redaction_pipeline.sql"}}
-  ],
-  "tags": {
-    "created_by": "otel-pii-redaction-deploy-script"
-  }
-}
-EOF
-)
+PIPELINE_JSON=$(python3 -c "
+import json
+print(json.dumps({
+    'name': 'otel-pii-redaction',
+    'catalog': '$CATALOG',
+    'schema': '$TARGET_SCHEMA',
+    'serverless': True,
+    'continuous': False,
+    'channel': 'CURRENT',
+    'configuration': {
+        'source_catalog': '$CATALOG',
+        'source_schema': '$SOURCE_SCHEMA',
+        'table_prefix': '$TABLE_PREFIX',
+        'pii_categories': '$PII_CATEGORIES',
+        'custom_patterns_regex': '$CUSTOM_PATTERNS_REGEX'
+    },
+    'libraries': [{'file': {'path': '$WORKSPACE_PATH/pii_redaction_pipeline.sql'}}],
+    'tags': {'created_by': 'otel-pii-redaction-deploy-script'}
+}))
+")
 PIPELINE_RESULT=$(echo "$PIPELINE_JSON" | databricks pipelines create --json @- --host "$WORKSPACE_HOST" 2>&1) || true
 echo "$PIPELINE_RESULT"
 PIPELINE_ID=$(echo "$PIPELINE_RESULT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('pipeline_id','UNKNOWN'))" 2>/dev/null || echo "UNKNOWN")
