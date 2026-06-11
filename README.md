@@ -27,7 +27,18 @@ A **Spark Declarative Pipeline** (SDP) incrementally reads new OTel spans, appli
 
 ## Quick start
 
-### One-command deployment
+### Guided notebook deployment (recommended)
+
+For a step-by-step deployment directly in your Databricks workspace:
+
+1. Clone this repo into a [Databricks Git folder](https://docs.databricks.com/en/repos/index.html)
+2. Open `deploy_notebook.py` in your workspace
+3. Fill in the widget parameters at the top (catalog, source schema, target schema, table prefix)
+4. **Run All** — each step validates before proceeding
+
+This approach uses the Databricks Python SDK (no CLI required), handles idempotency (safe to re-run), and provides interactive feedback at each step.
+
+### CLI deployment
 
 ```bash
 ./deploy.sh <WORKSPACE_HOST> <CATALOG> <SOURCE_SCHEMA> <TARGET_SCHEMA> <TABLE_PREFIX>
@@ -136,7 +147,8 @@ LIMIT 5;
 
 | File | Description |
 |---|---|
-| `deploy.sh` | One-command deployment script |
+| `deploy_notebook.py` | Guided deployment notebook — interactive alternative to `deploy.sh` |
+| `deploy.sh` | CLI deployment script |
 | `pii_redaction_pipeline.sql` | SDP pipeline — streaming tables with `ai_mask()` |
 | `otel_retention_cleanup.py` | Databricks notebook for raw table TTL cleanup |
 | `unified_view.sql` | Unified trace view joining spans + annotations |
