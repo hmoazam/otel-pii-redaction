@@ -1,8 +1,10 @@
-# OTel PII Redaction for Databricks
+# Redact PII from OpenTelemetry traces in Unity Catalog
 
-Redact PII from OpenTelemetry traces stored in Unity Catalog using Databricks AI Functions and Spark Declarative Pipelines.
+OpenTelemetry (OTel) trace data often contains personally identifiable information (PII) such as email addresses, phone numbers, and credit card numbers embedded in span attributes, log bodies, and resource metadata. Sharing this trace data broadly for debugging or observability purposes can create compliance and privacy risks.
 
-Works with any OTel traces in UC — including [MLflow traces logged to Unity Catalog](https://docs.databricks.com/aws/en/mlflow3/genai/tracing/trace-unity-catalog).
+This solution uses [AI Functions](https://docs.databricks.com/aws/en/sql/language-manual/functions/ai_mask) and [Spark Declarative Pipelines](https://docs.databricks.com/aws/en/sql/language-manual/delta-live-tables-sql-ref) to incrementally redact PII from raw OTel tables and write the results to a separate set of tables with broader access controls. A configurable retention job handles cleanup of the raw data.
+
+You can use this with any OTel traces stored in Unity Catalog, including [MLflow traces logged to Unity Catalog](https://docs.databricks.com/aws/en/mlflow3/genai/tracing/trace-unity-catalog).
 
 ## How it works
 
