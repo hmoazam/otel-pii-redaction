@@ -117,6 +117,16 @@ The pipeline can be adapted to use a different redaction method, such as explici
 
 For **custom patterns** (e.g., employee IDs like `EMP-XXXXXX`), use `regexp_replace()` before `ai_mask()` in the pipeline SQL. See the [plan document](otel-pii-redaction-plan.md) for details.
 
+## Retention and access control
+
+### Raw data retention
+
+The deployment includes an optional retention job that deletes raw trace data older than a configurable number of days (default: 90). This is useful for complying with GDPR and other data protection regulations that require personal data to be deleted after it is no longer needed for its original purpose. Once the redaction pipeline has processed the raw spans, the originals containing PII can be safely removed according to your retention policy. Set `retention_days` to `0` or `none` to disable automatic deletion if you manage retention separately.
+
+### Limiting access to raw tables
+
+The raw OTel tables contain unredacted PII and should have restricted access. Grant access to the raw source schema only to pipeline service principals and administrators who need it for debugging or incident response. All routine analytics, dashboards, and observability workflows should query the redacted tables instead. The `setup_schema_and_grants.sql` file includes example grants to help enforce this separation.
+
 ## Testing
 
 ### Send test PII data
