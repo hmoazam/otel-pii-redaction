@@ -18,9 +18,12 @@
 dbutils.widgets.text("catalog", "", "1. Catalog")
 dbutils.widgets.text("source_schema", "", "2. Source Schema (raw OTel tables)")
 dbutils.widgets.text("target_schema", "", "3. Target Schema (redacted output)")
-dbutils.widgets.text("table_prefix", "", "4. Table Prefix")
+dbutils.widgets.text("table_prefix", "", "4. Otel Traces Table Prefix")
 dbutils.widgets.text("pii_categories", "'email','phone','ssn','credit_card','name','address'", "5. PII Categories")
 dbutils.widgets.text("pipeline_name", "otel-pii-redaction", "6. Pipeline Name")
+dbutils.widgets.dropdown("redaction_pipeline_mode", "triggered", ["triggered", "continuous"], "8. Pipeline Mode")
+dbutils.widgets.dropdown("redaction_trigger_frequency", "daily", ["hourly", "every 6 hours", "daily", "weekly"], "9. Trigger Frequency (triggered mode)")
+dbutils.widgets.text("retention_days", "90", "7. Retention Days (blank or 0 = no deletion)")
 
 # COMMAND ----------
 
@@ -32,6 +35,9 @@ target_schema = dbutils.widgets.get("target_schema").strip()
 table_prefix = dbutils.widgets.get("table_prefix").strip()
 pii_categories = dbutils.widgets.get("pii_categories").strip()
 pipeline_name = dbutils.widgets.get("pipeline_name").strip()
+retention_days = dbutils.widgets.get("retention_days").strip()
+pipeline_mode = dbutils.widgets.get("redaction_pipeline_mode").strip().lower()
+trigger_frequency = dbutils.widgets.get("redaction_trigger_frequency").strip().lower()
 
 # Validate identifiers (catalog, schema, prefix)
 _ID_RE = re.compile(r"^[a-zA-Z0-9_]+$")
@@ -61,6 +67,27 @@ if pii_categories and not _PII_RE.match(pii_categories):
         "Expected comma-separated quoted names like: 'email','phone','ssn'"
     )
 
+# Validate retention_days; blank, "0", "none", or "never" disables raw-table deletion
+_RETENTION_DISABLED = ("", "0", "none", "never")
+retention_enabled = retention_days.lower() not in _RETENTION_DISABLED
+if retention_enabled and (not retention_days.isdigit() or int(retention_days) <= 0):
+    dbutils.notebook.exit(f"FAILED: Invalid Retention Days '{retention_days}'. Use a positive integer, or leave blank / 0 / none to disable deletion.")
+
+# Validate pipeline_mode and map trigger frequency to a Quartz cron expression
+_VALID_MODES = ("triggered", "continuous")
+if pipeline_mode not in _VALID_MODES:
+    dbutils.notebook.exit(f"FAILED: Invalid Pipeline Mode '{pipeline_mode}'. Must be one of: {', '.join(_VALID_MODES)}")
+
+_FREQUENCY_CRON = {
+    "hourly": "0 0 * * * ?",
+    "every 6 hours": "0 0 0/6 * * ?",
+    "daily": "0 0 0 * * ?",
+    "weekly": "0 0 0 ? * MON",
+}
+if pipeline_mode == "triggered" and trigger_frequency not in _FREQUENCY_CRON:
+    dbutils.notebook.exit(f"FAILED: Invalid Trigger Frequency '{trigger_frequency}'. Must be one of: {', '.join(_FREQUENCY_CRON)}")
+trigger_cron = _FREQUENCY_CRON.get(trigger_frequency)
+
 spans_table = f"{catalog}.{source_schema}.{table_prefix}_otel_spans"
 logs_table = f"{catalog}.{source_schema}.{table_prefix}_otel_logs"
 annotations_table = f"{catalog}.{source_schema}.{table_prefix}_otel_annotations"
@@ -72,6 +99,10 @@ print(f"  Target schema:  {catalog}.{target_schema}")
 print(f"  Table prefix:   {table_prefix}")
 print(f"  PII categories: {pii_categories}")
 print(f"  Pipeline name:  {pipeline_name}")
+print(f"  Retention days: {retention_days if retention_enabled else 'disabled (no raw table deletion)'}")
+print(f"  Pipeline mode:  {pipeline_mode}")
+if pipeline_mode == "triggered":
+    print(f"  Trigger freq:   {trigger_frequency} (cron: {trigger_cron})")
 print(f"  Source tables:  {spans_table}, {logs_table}, {annotations_table}")
 
 # COMMAND ----------
@@ -128,19 +159,21 @@ print(f"Target schema ready: {catalog}.{target_schema}")
 
 import os
 import base64
+from databricks.sdk.service.workspace import ExportFormat
 
-# Read pipeline SQL from the repo (assumes notebook is in a Databricks Git folder)
+# Locate the pipeline SQL in the repo (assumes notebook is in a Databricks Git folder)
 notebook_path = dbutils.notebook.entry_point.getDbutils().notebook().getContext().notebookPath().get()
 notebook_dir = os.path.dirname(notebook_path)
-sql_file_path = f"/Workspace{notebook_dir}/pii_redaction_pipeline.sql"
+sql_source_path = f"{notebook_dir}/pii_redaction_pipeline.sql"
 
+# Read via the Workspace API (robust; works for FILE or NOTEBOOK objects, avoids /Workspace FUSE-mount issues)
 try:
-    with open(sql_file_path, "r") as f:
-        pipeline_sql_content = f.read()
-    print(f"Read pipeline SQL ({len(pipeline_sql_content)} chars) from: {sql_file_path}")
-except FileNotFoundError:
+    exported = w.workspace.export(path=sql_source_path, format=ExportFormat.AUTO)
+    pipeline_sql_content = base64.b64decode(exported.content).decode()
+    print(f"Read pipeline SQL ({len(pipeline_sql_content)} chars) from: {sql_source_path}")
+except Exception as e:
     dbutils.notebook.exit(
-        f"FAILED: Could not find pii_redaction_pipeline.sql at {sql_file_path}. "
+        f"FAILED: Could not read pii_redaction_pipeline.sql at {sql_source_path}: {e}. "
         "Make sure you are running this notebook from a Databricks Git folder (Repos) "
         "that contains the otel-pii-redaction repository."
     )
@@ -177,9 +210,9 @@ existing = [
 pipeline_spec = dict(
     name=pipeline_name,
     catalog=catalog,
-    schema=target_schema,
+    target=target_schema,
     serverless=True,
-    continuous=False,
+    continuous=(pipeline_mode == "continuous"),
     channel="CURRENT",
     configuration={
         "source_catalog": catalog,
@@ -188,7 +221,6 @@ pipeline_spec = dict(
         "pii_categories": pii_categories,
     },
     libraries=[PipelineLibrary(file=FileLibrary(path=pipeline_sql_workspace_path))],
-    tags={"created_by": "otel-pii-redaction-notebook"},
 )
 
 if existing:
@@ -200,6 +232,74 @@ else:
     result = w.pipelines.create(**pipeline_spec)
     pipeline_id = result.pipeline_id
     print(f"Pipeline created with ID: {pipeline_id}")
+
+# COMMAND ----------
+
+# DBTITLE 1,Step 5b header
+# MAGIC %md
+# MAGIC ## Step 5b: Schedule Triggered Pipeline
+# MAGIC
+# MAGIC If the pipeline mode is **triggered**, this creates (or updates) a scheduled Job that triggers the pipeline on the chosen frequency. If the mode is **continuous**, the pipeline runs on its own and no scheduling Job is created.
+
+# COMMAND ----------
+
+# DBTITLE 1,Schedule triggered pipeline
+# Schedule the pipeline to run on a recurring cadence (triggered mode only).
+# Continuous pipelines run on their own and do not need a scheduling job.
+from databricks.sdk.service.jobs import (
+    JobSettings,
+    Task,
+    PipelineTask,
+    CronSchedule,
+    PauseStatus,
+    QueueSettings,
+)
+
+trigger_job_name = f"{pipeline_name}-scheduled-trigger"
+
+if pipeline_mode == "triggered":
+    trigger_job_settings = JobSettings(
+        name=trigger_job_name,
+        schedule=CronSchedule(
+            quartz_cron_expression=trigger_cron,
+            timezone_id="America/Los_Angeles",
+            pause_status=PauseStatus.UNPAUSED,
+        ),
+        max_concurrent_runs=1,
+        tasks=[
+            Task(
+                task_key="run_redaction_pipeline",
+                pipeline_task=PipelineTask(pipeline_id=pipeline_id),
+                description="Trigger the OTel PII redaction SDP pipeline",
+            )
+        ],
+        tags={"project": "otel-pii-redaction", "purpose": "pipeline-trigger"},
+        queue=QueueSettings(enabled=True),
+    )
+
+    existing_trigger_jobs = [
+        j for j in w.jobs.list(name=trigger_job_name)
+        if j.settings and j.settings.name == trigger_job_name
+    ]
+    if existing_trigger_jobs:
+        trigger_job_id = existing_trigger_jobs[0].job_id
+        print(f"Trigger job '{trigger_job_name}' already exists (ID: {trigger_job_id}). Updating...")
+        w.jobs.update(job_id=trigger_job_id, new_settings=trigger_job_settings)
+        print(f"Trigger job updated (cron: {trigger_cron}).")
+    else:
+        tj = w.jobs.create(
+            name=trigger_job_settings.name,
+            schedule=trigger_job_settings.schedule,
+            max_concurrent_runs=trigger_job_settings.max_concurrent_runs,
+            tasks=trigger_job_settings.tasks,
+            tags=trigger_job_settings.tags,
+            queue=trigger_job_settings.queue,
+        )
+        trigger_job_id = tj.job_id
+        print(f"Scheduled trigger job created with ID: {trigger_job_id} (cron: {trigger_cron})")
+else:
+    trigger_job_id = None
+    print("Pipeline mode is 'continuous' — pipeline runs continuously, no scheduled trigger job created.")
 
 # COMMAND ----------
 
@@ -235,7 +335,10 @@ POLL_INTERVAL = 30
 elapsed = 0
 state = "UNKNOWN"
 
-print(f"Waiting for pipeline to complete (timeout: {MAX_WAIT_SECONDS // 60}min, checking every {POLL_INTERVAL}s)...")
+# Continuous pipelines stay RUNNING and never reach COMPLETED — treat RUNNING as the healthy terminal state.
+success_state = "RUNNING" if pipeline_mode == "continuous" else "COMPLETED"
+terminal_states = (success_state, "FAILED", "CANCELED")
+print(f"Waiting for pipeline (mode: {pipeline_mode}, timeout: {MAX_WAIT_SECONDS // 60}min, checking every {POLL_INTERVAL}s)...")
 while elapsed < MAX_WAIT_SECONDS:
     pipeline_detail = w.pipelines.get(pipeline_id=pipeline_id)
     latest = pipeline_detail.latest_updates or []
@@ -248,53 +351,27 @@ while elapsed < MAX_WAIT_SECONDS:
     else:
         state = "STARTING"
     print(f"  [{elapsed}s] State: {state}")
-    if state in ("COMPLETED", "FAILED", "CANCELED"):
+    if state in terminal_states:
         break
     time.sleep(POLL_INTERVAL)
     elapsed += POLL_INTERVAL
 
-if elapsed >= MAX_WAIT_SECONDS and state not in ("COMPLETED", "FAILED", "CANCELED"):
+if elapsed >= MAX_WAIT_SECONDS and state not in terminal_states:
     dbutils.notebook.exit(f"FAILED: Pipeline timed out after {MAX_WAIT_SECONDS}s in state {state}")
 
-if state != "COMPLETED":
+if state != success_state:
     print(f"\nPipeline ended with state: {state}. Check the UI for details.")
     dbutils.notebook.exit(f"FAILED: Pipeline ended with state {state}")
 
-print("\nPipeline completed successfully!")
+if pipeline_mode == "continuous":
+    print("\nPipeline is running continuously (will keep processing new data).")
+else:
+    print("\nPipeline completed successfully!")
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Step 8: Create Unified View
-
-# COMMAND ----------
-
-unified_view_path = f"/Workspace{notebook_dir}/unified_view.sql"
-
-try:
-    with open(unified_view_path, "r") as f:
-        unified_view_sql = f.read()
-except FileNotFoundError:
-    dbutils.notebook.exit(
-        f"FAILED: Could not find unified_view.sql at {unified_view_path}. "
-        "Make sure the file exists in the same Git folder."
-    )
-
-# Substitute parameters
-unified_view_sql = (
-    unified_view_sql
-    .replace("${target_catalog}", catalog)
-    .replace("${target_schema}", target_schema)
-    .replace("${table_prefix}", table_prefix)
-)
-
-spark.sql(unified_view_sql)
-print(f"Unified view created: {catalog}.{target_schema}.{table_prefix}_trace_unified")
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ## Step 9: Create Retention Cleanup Job
+# MAGIC ## Step 8: Create Retention Cleanup Job
 
 # COMMAND ----------
 
@@ -308,79 +385,96 @@ from databricks.sdk.service.jobs import (
     QueueSettings,
 )
 
-# Upload retention notebook
-retention_source_path = f"/Workspace{notebook_dir}/otel_retention_cleanup.py"
-try:
-    with open(retention_source_path, "r") as f:
-        retention_content = f.read()
-except FileNotFoundError:
-    dbutils.notebook.exit(
-        f"FAILED: Could not find otel_retention_cleanup.py at {retention_source_path}."
-    )
-
-w.workspace.import_(
-    path=f"{workspace_path}/otel_retention_cleanup",
-    content=base64.b64encode(retention_content.encode()).decode(),
-    format=ImportFormat.SOURCE,
-    language=Language.PYTHON,
-    overwrite=True,
-)
-print(f"Uploaded retention notebook to: {workspace_path}/otel_retention_cleanup")
-
-# Build desired job settings
 job_name = "otel-raw-retention-cleanup"
-desired_settings = JobSettings(
-    name=job_name,
-    schedule=CronSchedule(
-        quartz_cron_expression="0 0 2 * * ?",
-        timezone_id="America/Los_Angeles",
-        pause_status=PauseStatus.UNPAUSED,
-    ),
-    max_concurrent_runs=1,
-    tasks=[
-        Task(
-            task_key="retention_cleanup",
-            notebook_task=NotebookTask(
-                notebook_path=f"{workspace_path}/otel_retention_cleanup",
-                base_parameters={
-                    "retention_days": "90",
-                    "source_catalog": catalog,
-                    "source_schema": source_schema,
-                    "table_prefix": table_prefix,
-                },
-                source=Source.WORKSPACE,
-            ),
-            description="Delete rows older than retention_days and vacuum raw OTel tables",
-        )
-    ],
-    tags={"project": "otel-pii-redaction", "purpose": "retention-cleanup"},
-    queue=QueueSettings(enabled=True),
-)
 
-# Check for existing job with same name
-existing_jobs = [j for j in w.jobs.list(name=job_name) if j.settings and j.settings.name == job_name]
-
-if existing_jobs:
-    job_id = existing_jobs[0].job_id
-    print(f"Job '{job_name}' already exists (ID: {job_id}). Updating...")
-    w.jobs.update(job_id=job_id, new_settings=desired_settings)
-    print("Job updated.")
+if not retention_enabled:
+    # Retention disabled (blank / 0 / none): do NOT delete raw tables.
+    # If a cleanup job exists from a previous deployment, pause it so it stops deleting.
+    existing_jobs = [j for j in w.jobs.list(name=job_name) if j.settings and j.settings.name == job_name]
+    if existing_jobs:
+        job_id = existing_jobs[0].job_id
+        current_settings = w.jobs.get(job_id=job_id).settings
+        if current_settings.schedule:
+            current_settings.schedule.pause_status = PauseStatus.PAUSED
+            w.jobs.update(job_id=job_id, new_settings=current_settings)
+        print(f"Retention disabled — paused existing cleanup job (ID: {job_id}). Raw tables will NOT be deleted.")
+    else:
+        job_id = None
+        print("Retention disabled — no cleanup job created. Raw tables will NOT be deleted.")
 else:
-    job_result = w.jobs.create(
-        name=desired_settings.name,
-        schedule=desired_settings.schedule,
-        max_concurrent_runs=desired_settings.max_concurrent_runs,
-        tasks=desired_settings.tasks,
-        tags=desired_settings.tags,
-        queue=desired_settings.queue,
+    # Read the retention notebook via the Workspace API (robust; avoids /Workspace FUSE-mount flakiness for Git-synced files)
+    from databricks.sdk.service.workspace import ExportFormat
+    retention_src = f"{notebook_dir}/otel_retention_cleanup"
+    try:
+        exported = w.workspace.export(path=retention_src, format=ExportFormat.SOURCE)
+        retention_content = base64.b64decode(exported.content).decode()
+    except Exception as e:
+        dbutils.notebook.exit(
+            f"FAILED: Could not export retention notebook from {retention_src}: {e}"
+        )
+
+    w.workspace.import_(
+        path=f"{workspace_path}/otel_retention_cleanup",
+        content=base64.b64encode(retention_content.encode()).decode(),
+        format=ImportFormat.SOURCE,
+        language=Language.PYTHON,
+        overwrite=True,
     )
-    job_id = job_result.job_id
-    print(f"Retention job created with ID: {job_id}")
+    print(f"Uploaded retention notebook to: {workspace_path}/otel_retention_cleanup")
+
+    # Build desired job settings
+    desired_settings = JobSettings(
+        name=job_name,
+        schedule=CronSchedule(
+            quartz_cron_expression="0 0 2 * * ?",
+            timezone_id="America/Los_Angeles",
+            pause_status=PauseStatus.UNPAUSED,
+        ),
+        max_concurrent_runs=1,
+        tasks=[
+            Task(
+                task_key="retention_cleanup",
+                notebook_task=NotebookTask(
+                    notebook_path=f"{workspace_path}/otel_retention_cleanup",
+                    base_parameters={
+                        "retention_days": retention_days,
+                        "source_catalog": catalog,
+                        "source_schema": source_schema,
+                        "table_prefix": table_prefix,
+                    },
+                    source=Source.WORKSPACE,
+                ),
+                description="Delete rows older than retention_days and vacuum raw OTel tables",
+            )
+        ],
+        tags={"project": "otel-pii-redaction", "purpose": "retention-cleanup"},
+        queue=QueueSettings(enabled=True),
+    )
+
+    # Check for existing job with same name
+    existing_jobs = [j for j in w.jobs.list(name=job_name) if j.settings and j.settings.name == job_name]
+
+    if existing_jobs:
+        job_id = existing_jobs[0].job_id
+        print(f"Job '{job_name}' already exists (ID: {job_id}). Updating...")
+        w.jobs.update(job_id=job_id, new_settings=desired_settings)
+        print("Job updated.")
+    else:
+        job_result = w.jobs.create(
+            name=desired_settings.name,
+            schedule=desired_settings.schedule,
+            max_concurrent_runs=desired_settings.max_concurrent_runs,
+            tasks=desired_settings.tasks,
+            tags=desired_settings.tags,
+            queue=desired_settings.queue,
+        )
+        job_id = job_result.job_id
+        print(f"Retention job created with ID: {job_id}")
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Step 10: Validate Redaction
+# MAGIC ## Step 9: Validate Redaction
 
 # COMMAND ----------
 
@@ -415,11 +509,17 @@ except Exception as e:
 
 print("=== Deployment Summary ===")
 print(f"  Pipeline ID:     {pipeline_id}")
-print(f"  Retention Job:   {job_id}")
+print(f"  Pipeline mode:   {pipeline_mode}")
+if pipeline_mode == "triggered":
+    print(f"  Trigger Job:     {trigger_job_id} (cron: {trigger_cron})")
+print(f"  Retention Job:   {job_id if job_id else 'disabled (no deletion)'}")
 print(f"  Target schema:   {catalog}.{target_schema}")
 print(f"  Redacted spans:  {catalog}.{target_schema}.redacted_spans")
 print(f"  Redacted logs:   {catalog}.{target_schema}.redacted_logs")
 print(f"  Unified view:    {catalog}.{target_schema}.{table_prefix}_trace_unified")
 if host:
     print(f"\n  Pipeline UI:     https://{host}/pipelines/{pipeline_id}")
-    print(f"  Job UI:          https://{host}/jobs/{job_id}")
+    if job_id:
+        print(f"  Job UI:          https://{host}/jobs/{job_id}")
+    if pipeline_mode == "triggered" and trigger_job_id:
+        print(f"  Trigger Job UI:  https://{host}/jobs/{trigger_job_id}")

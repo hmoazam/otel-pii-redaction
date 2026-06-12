@@ -49,3 +49,4 @@ spark.sql(f"VACUUM {spans_table}")
 # COMMAND ----------
 
 spark.sql(f"VACUUM {logs_table}")
+
