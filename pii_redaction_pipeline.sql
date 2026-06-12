@@ -150,3 +150,4 @@ COMMENT 'OTel annotations (passthrough, no PII redaction applied)'
 AS
 SELECT *
 FROM STREAM(${source_catalog}.${source_schema}.${table_prefix}_otel_annotations);
+
