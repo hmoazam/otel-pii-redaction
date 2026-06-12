@@ -72,25 +72,25 @@ If you prefer to set things up step by step:
 
 ## Parameters
 
-### Pipeline configuration
+These are the widget parameters in the guided deployment notebook (`deploy_notebook.py`):
 
-| Parameter | Description | Example |
-|---|---|---|
-| `source_catalog` | UC catalog containing raw OTel tables | `my_catalog` |
-| `source_schema` | UC schema containing raw OTel tables | `traces_raw` |
-| `table_prefix` | Prefix used for OTel table names | `my_app` |
-| `pii_categories` | PII types to redact | `'email','phone','ssn','credit_card','name','address'` |
+| # | Parameter | Description | Default | Example |
+|---|---|---|---|---|
+| 1 | `catalog` | UC catalog for both raw and redacted tables | (required) | `my_catalog` |
+| 2 | `source_schema` | Schema containing raw OTel tables | (required) | `traces_raw` |
+| 3 | `target_schema` | Schema for redacted output tables | (required) | `traces_redacted` |
+| 4 | `table_prefix` | Prefix used for OTel table names | (required) | `my_app` |
+| 5 | `pii_categories` | PII types to redact (comma-separated, single-quoted) | `'email','phone','ssn','credit_card','name','address'` | — |
+| 6 | `pipeline_name` | Name for the SDP pipeline | `otel-pii-redaction` | — |
+| 7 | `retention_days` | Days to retain raw data before deletion. Blank, `0`, or `none` disables deletion | `90` | `30` |
+| 8 | `redaction_pipeline_mode` | Pipeline execution mode | `triggered` | `triggered` or `continuous` |
+| 9 | `redaction_trigger_frequency` | How often the pipeline runs (triggered mode only) | `daily` | `hourly`, `every 6 hours`, `daily`, `weekly` |
 
-Source tables are derived as `{source_catalog}.{source_schema}.{table_prefix}_otel_spans` (and `_otel_logs`, `_otel_annotations`).
+Source tables are derived as `{catalog}.{source_schema}.{table_prefix}_otel_spans` (and `_otel_logs`, `_otel_annotations`).
 
-### Retention job parameters
-
-| Parameter | Description | Default |
-|---|---|---|
-| `retention_days` | Days to retain raw data before deletion | `90` |
-| `source_catalog` | Same as pipeline | — |
-| `source_schema` | Same as pipeline | — |
-| `table_prefix` | Same as pipeline | — |
+**Pipeline modes:**
+- **triggered** — creates a scheduled Job that triggers the pipeline on the chosen frequency. The pipeline processes new data on each run and stops.
+- **continuous** — the pipeline runs continuously, processing new data as it arrives. No scheduling job is created.
 
 ## What gets redacted
 
