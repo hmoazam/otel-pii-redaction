@@ -113,6 +113,8 @@ Non-PII fields (trace IDs, span IDs, timestamps, service names, status codes) ar
 - `ssn`, `credit_card` — reliable
 - `ip_address`, `date_of_birth` — works in practice
 
+The pipeline can be adapted to use a different redaction method, such as explicit regular expressions with `regexp_replace()`. However, `ai_mask()` is recommended because it is LLM-backed and handles varied PII formats (for example, phone numbers written as `(555) 123-4567`, `555.123.4567`, or `+1 555-123-4567`) without requiring a regex for each variation.
+
 For **custom patterns** (e.g., employee IDs like `EMP-XXXXXX`), use `regexp_replace()` before `ai_mask()` in the pipeline SQL. See the [plan document](otel-pii-redaction-plan.md) for details.
 
 ## Testing
